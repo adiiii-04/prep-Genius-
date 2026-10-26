@@ -1,0 +1,25 @@
+# ── Core Web Framework ────────────────────────────────────────────────────────
+streamlit>=1.35.0
+
+# ── YouTube Transcript ─────────────────────────────────────────────────────────
+youtube-transcript-api>=0.6.2
+
+# ── AI / NLP ───────────────────────────────────────────────────────────────────
+langchain>=0.3.0                    # LangChain framework for summarization
+langchain-openai>=0.2.0             # OpenAI chat model integration for LangChain
+openai>=1.40.0                      # OpenAI API client
+google-generativeai>=0.7.0          # Gemini API (flashcards, quiz)
+sentence-transformers>=3.0.0        # Local embeddings for topic clustering
+scikit-learn>=1.5.0                 # KMeans clustering
+
+# ── Text Processing ────────────────────────────────────────────────────────────
+nltk>=3.8.1                         # Sentence tokenisation
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+reportlab>=4.2.0                    # PDF generation
+genanki>=0.13.0                     # Anki .apkg deck export
+markdown>=3.6                       # Markdown rendering helpers
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.1                # Load .env variables
+requests>=2.32.0                    # HTTP calls (used in transcript fallback)
