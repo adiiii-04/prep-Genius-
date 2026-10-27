@@ -13,8 +13,21 @@ import logging
 
 from dotenv import load_dotenv
 
-# Load .env FIRST — before any os.getenv() calls
-load_dotenv()
+# Load .env reliably from the directory of this script
+_env_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_file):
+    load_dotenv(dotenv_path=_env_file, override=True)
+else:
+    load_dotenv(override=True)
+
+# Also support Streamlit Cloud secrets (st.secrets)
+try:
+    if hasattr(st, "secrets"):
+        for _secret_key in ["NVIDIA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "NEMOTRON_MODEL", "NVIDIA_BASE_URL"]:
+            if _secret_key in st.secrets and not os.getenv(_secret_key):
+                os.environ[_secret_key] = str(st.secrets[_secret_key])
+except Exception:
+    pass
 
 # ── Safe Logging Configuration (masks secrets) ────────────────────────────────
 class SecretMaskingFilter(logging.Filter):
@@ -561,6 +574,7 @@ PROGRESS_STEPS = [
 def _init():
     defaults = dict(
         generated=False, generating=False, error=None,
+        demo_mode=False,
         progress_step=-1,
         url="",
         language="🇺🇸 English", notes_format="Detailed",
@@ -705,6 +719,34 @@ def build_quiz_json_export() -> bytes:
         title=doc_title,
     )
 
+
+
+def load_demo_data():
+    """Load sample MIT 6.006 lecture data for zero-config evaluation without any API keys."""
+    from sample_data import (
+        SAMPLE_LECTURE_TITLE,
+        SAMPLE_TRANSCRIPT_SEGMENTS,
+        SAMPLE_REVISION_NOTES,
+        SAMPLE_FLASHCARDS,
+        SAMPLE_QUIZ,
+        SAMPLE_TOPICS,
+    )
+    st.session_state.raw_transcript = "\n".join(seg["text"] for seg in SAMPLE_TRANSCRIPT_SEGMENTS)
+    st.session_state.transcript_segments = SAMPLE_TRANSCRIPT_SEGMENTS
+    st.session_state.revision_notes = SAMPLE_REVISION_NOTES
+    st.session_state.flashcards = SAMPLE_FLASHCARDS
+    st.session_state.quiz = SAMPLE_QUIZ
+    st.session_state.topics = SAMPLE_TOPICS
+    st.session_state.lecture_title = SAMPLE_LECTURE_TITLE
+    st.session_state.generated = True
+    st.session_state.generating = False
+    st.session_state.error = None
+    st.session_state.quiz_submitted = False
+    st.session_state.quiz_index = 0
+    st.session_state.quiz_answers = {}
+    st.session_state.quiz_show_results = False
+    st.session_state.demo_mode = True
+    logger.info("Loaded demo lecture data (MIT 6.006) successfully")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -899,6 +941,10 @@ def run_pipeline(url: str, lang_key: str, bar, step_text):
 # ═══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
     st.markdown("### ⚙️ API Configuration")
+    if st.button("🎮 Load Demo Lecture (No Key)", use_container_width=True, help="Load complete MIT 6.006 study suite without any API keys"):
+        load_demo_data()
+        st.rerun()
+    st.markdown("---")
 
     st.markdown("#### 🤖 Revision Notes (Nemotron 3.5)")
     nvidia_key_input = st.text_input(
@@ -1096,7 +1142,11 @@ st.markdown(
     'color:#94A3B8;letter-spacing:0.5px;text-transform:uppercase;">Try Sample Lectures:</span></div>',
     unsafe_allow_html=True,
 )
-c_ex1, c_ex2, c_ex3, c_ex_clear = st.columns([1.5, 1.5, 1.5, 1.0])
+c_demo, c_ex1, c_ex2, c_ex3, c_ex_clear = st.columns([1.8, 1.4, 1.4, 1.4, 0.9])
+with c_demo:
+    if st.button("🎮 Demo (No Key)", type="secondary", use_container_width=True, help="Explore full pipeline using bundled MIT 6.006 lecture notes without any API key"):
+        load_demo_data()
+        st.rerun()
 with c_ex1:
     if st.button("⚡ MIT Algo", use_container_width=True, help="Load MIT 6.006 Lecture 1 URL"):
         st.session_state.url = "https://www.youtube.com/watch?v=Kg4bqm1QDIC"
@@ -1152,6 +1202,7 @@ if not _nvidia_key and not _openai_key:
     st.markdown(
         '<div class="warn-box">⚠️ <strong>No NVIDIA API key detected.</strong> '
         'Please enter your NVIDIA API key in the sidebar (←) or add it to your <code>.env</code> file. '
+        'You can also click <strong>🎮 Demo (No Key)</strong> above to test all features instantly without any key. '
         'Get a free key at <a href="https://build.nvidia.com" target="_blank">build.nvidia.com</a></div>',
         unsafe_allow_html=True,
     )
@@ -1177,8 +1228,8 @@ if generate_clicked:
     )
     if not has_api_key:
         st.session_state.error = (
-            "NVIDIA API key is missing. Please enter your NVIDIA_API_KEY in the sidebar (←) or your .env file. "
-            "Get a free key at https://build.nvidia.com"
+            "NVIDIA API key is missing. Either enter your NVIDIA_API_KEY in the sidebar (←), "
+            "add it to your .env file, or click '🎮 Demo (No Key)' above to explore without an API key."
         )
         logger.warning("Generation aborted: No NVIDIA API key")
         st.rerun()
