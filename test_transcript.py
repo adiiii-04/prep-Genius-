@@ -470,3 +470,48 @@ class TestFriendlyErrorMessage:
         ]
         for exc in errors:
             assert isinstance(friendly_error_message(exc), str)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. parse_manual_transcript
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestParseManualTranscript:
+    def test_timestamped_youtube_format(self):
+        from transcript import parse_manual_transcript
+        raw = """0:00
+Introduction to Algorithms
+0:05
+Today we discuss asymptotic notation
+0:15
+Recurrence relations
+"""
+        res = parse_manual_transcript(raw, video_title="Intro Algo")
+        assert res.segment_count == 3
+        assert res.segments[0].start == 0.0
+        assert "Introduction" in res.segments[0].text
+        assert res.segments[1].start == 5.0
+        assert res.segments[2].start == 15.0
+
+    def test_bracketed_timestamps(self):
+        from transcript import parse_manual_transcript
+        raw = """[00:02] Welcome to class
+[00:10] Machine Learning overview"""
+        res = parse_manual_transcript(raw)
+        assert res.segment_count == 2
+        assert res.segments[0].start == 2.0
+        assert res.segments[1].start == 10.0
+
+    def test_plain_text_without_timestamps(self):
+        from transcript import parse_manual_transcript
+        raw = """Artificial intelligence is a branch of computer science.
+It focuses on building smart machines capable of performing tasks that typically require human intelligence.
+Machine learning is a subset of AI."""
+        res = parse_manual_transcript(raw)
+        assert res.segment_count >= 1
+        assert "Artificial intelligence" in res.full_text
+
+    def test_empty_text_raises_value_error(self):
+        from transcript import parse_manual_transcript
+        with pytest.raises(ValueError, match="cannot be empty"):
+            parse_manual_transcript("   \n  ")

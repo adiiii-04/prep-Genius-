@@ -16,10 +16,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Optional
 
+import requests
 from youtube_transcript_api import (
     CouldNotRetrieveTranscript,
     FetchedTranscript,
@@ -32,6 +34,7 @@ from youtube_transcript_api import (
     YouTubeRequestFailed,
     YouTubeTranscriptApi,
 )
+from youtube_transcript_api.proxies import GenericProxyConfig
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data model
@@ -135,6 +138,35 @@ def extract_video_id(url: str) -> str:
 # Core transcript fetching
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _create_api_client() -> YouTubeTranscriptApi:
+    """
+    Create an instance of YouTubeTranscriptApi configured with realistic browser
+    headers and optional proxy settings (from YOUTUBE_PROXY, HTTPS_PROXY, or HTTP_PROXY).
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    })
+
+    proxy_url = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+    proxy_config = None
+    if proxy_url and proxy_url.strip():
+        try:
+            proxy_config = GenericProxyConfig(
+                http_url=proxy_url.strip(),
+                https_url=proxy_url.strip(),
+            )
+        except Exception:
+            pass
+
+    return YouTubeTranscriptApi(proxy_config=proxy_config, http_client=session)
+
+
 def get_transcript(
     url: str,
     languages: Optional[list[str]] = None,
@@ -178,7 +210,7 @@ def get_transcript(
         languages = ["en", "en-US", "en-GB"]
 
     video_id = extract_video_id(url)  # raises ValueError on bad URL
-    api = YouTubeTranscriptApi()
+    api = _create_api_client()
 
     fetched: FetchedTranscript = _fetch_with_fallback(api, video_id, languages)
     segments = [
@@ -374,6 +406,7 @@ def friendly_error_message(exc: Exception) -> str:
     Returns:
         A human-readable string explaining the problem and suggesting next steps.
     """
+    exc_str = str(exc)
     if isinstance(exc, ValueError):
         return (
             f"⚠️ Invalid YouTube URL\n\n{exc}\n\n"
@@ -385,16 +418,16 @@ def friendly_error_message(exc: Exception) -> str:
             "The video owner has turned off captions, so automatic extraction "
             "is not possible.\n\n"
             "**Alternatives:**\n"
-            "- Paste the transcript text manually into the text area below.\n"
+            "- Switch to the **Paste Transcript** tab to paste the transcript manually.\n"
             "- Use an authorised audio-transcription service (e.g. Whisper) "
             "if you have permission to process the audio."
         )
     if isinstance(exc, NoTranscriptFound):
         return (
             "🔍 No captions found for this video.\n\n"
-            "YouTube does not have a transcript in any language for this video.\n\n"
+            "YouTube does not have a transcript in any matching language for this video.\n\n"
             "**Alternatives:**\n"
-            "- Paste the transcript text manually into the text area below.\n"
+            "- Switch to the **Paste Transcript** tab to paste the transcript text manually.\n"
             "- Use an authorised audio-transcription service if you have "
             "permission to process the audio."
         )
@@ -403,16 +436,106 @@ def friendly_error_message(exc: Exception) -> str:
             "📵 This video is unavailable.\n\n"
             "The video may be private, deleted, or restricted in your region."
         )
-    if isinstance(exc, (RequestBlocked, IpBlocked)):
-        return (
-            "🚧 YouTube has temporarily blocked requests from this IP address.\n\n"
-            "This usually happens due to rate-limiting. Please wait a few minutes "
-            "and try again, or use a different network connection."
-        )
     if isinstance(exc, YouTubeRequestFailed):
         return (
             f"🌐 Network error while contacting YouTube.\n\n{exc}\n\n"
             "Check your internet connection and try again."
         )
+    if (
+        isinstance(exc, (RequestBlocked, IpBlocked))
+        or "blocking requests from your IP" in exc_str
+        or "IpBlocked" in exc_str
+        or "RequestBlocked" in exc_str
+        or "Too Many Requests" in exc_str
+        or bool(re.search(r"\b429\b", exc_str))
+    ):
+        return (
+            "🚧 YouTube has temporarily blocked automated requests from this IP address.\n\n"
+            "This usually happens due to rate-limiting, cloud provider IPs (AWS/GCP/Azure/Streamlit Cloud), "
+            "or repeated requests.\n\n"
+            "**How to continue:**\n"
+            "1. 📋 **Paste the transcript directly**: Open the video on YouTube → click '... More' under the video title → 'Show transcript' → copy and paste it into the **Paste Transcript** tab above.\n"
+            "2. 🌐 **Use a Proxy**: If running in a cloud environment or VPN, configure `YOUTUBE_PROXY=http://...` in `.env` or in the sidebar.\n"
+            "3. ⏳ **Wait a few minutes**: Temporary IP blocks by YouTube typically expire after a brief cooldown."
+        )
     # Generic fallback
     return f"❌ An unexpected error occurred: {exc}"
+
+
+def parse_manual_transcript(
+    text: str,
+    video_title: str = "Manual Lecture",
+) -> TranscriptResult:
+    """
+    Parse manually pasted transcript text into a structured TranscriptResult.
+
+    Supports:
+    - YouTube 'Show transcript' copied format (e.g. '0:05 \\n Hello world' or '[00:05] Hello')
+    - SubRip / WebVTT subtitle formatting
+    - Plain text paragraphs or sentences without timestamps (assigns synthetic timestamps)
+
+    Args:
+        text: Raw transcript text pasted or loaded from file.
+        video_title: Optional title/identifier for the lecture.
+
+    Returns:
+        TranscriptResult containing parsed TranscriptSegment items.
+
+    Raises:
+        ValueError: If the text is empty or contains no words.
+    """
+    cleaned_input = text.strip()
+    if not cleaned_input or not any(c.isalnum() for c in cleaned_input):
+        raise ValueError("Transcript text cannot be empty.")
+
+    def _parse_timestamp(ts: str) -> float:
+        parts = [float(p) for p in ts.strip("[]").split(":")]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        return float(parts[0])
+
+    segments: list[TranscriptSegment] = []
+
+    # 1. Match timestamped blocks: [MM:SS] or MM:SS or HH:MM:SS
+    pattern = r"(?:^|\n)\s*\[?(\d{1,2}(?::\d{2}){1,2})\]?\s*\n?(.*?)(?=(?:\n\s*\[?\d{1,2}(?::\d{2}){1,2}\]?|\Z))"
+    matches = re.findall(pattern, cleaned_input, re.DOTALL)
+
+    if len(matches) >= 2:
+        for i, (ts_str, seg_text) in enumerate(matches):
+            seg_clean = " ".join(seg_text.split()).strip()
+            if not seg_clean:
+                continue
+            start = _parse_timestamp(ts_str)
+            if i + 1 < len(matches):
+                next_start = _parse_timestamp(matches[i + 1][0])
+                duration = max(1.0, next_start - start)
+            else:
+                duration = max(2.0, len(seg_clean.split()) * 0.35)
+            segments.append(TranscriptSegment(text=seg_clean, start=start, duration=duration))
+
+    # 2. Fallback to plain text / paragraphs if no timestamps matched
+    if not segments:
+        blocks = [b.strip() for b in re.split(r"\n{2,}|\n(?=[A-Z])", cleaned_input) if b.strip()]
+        if not blocks:
+            blocks = [cleaned_input]
+
+        curr_time = 0.0
+        for block in blocks:
+            sentences = re.split(r"(?<=[.!?])\s+", block)
+            for sent in sentences:
+                sent_clean = " ".join(sent.split()).strip()
+                if not sent_clean:
+                    continue
+                dur = max(2.0, len(sent_clean.split()) * 0.35)
+                segments.append(TranscriptSegment(text=sent_clean, start=curr_time, duration=dur))
+                curr_time += dur
+
+    return TranscriptResult(
+        video_id=video_title[:20].strip() or "manual",
+        language="English",
+        language_code="en",
+        is_generated=False,
+        segments=segments,
+    )

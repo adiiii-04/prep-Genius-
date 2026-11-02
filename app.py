@@ -595,6 +595,9 @@ def _init():
         cache_hit_message=None,
         lecture_title="PrepGenius — Study Notes",
         force_reprocess=False,
+        manual_transcript="",
+        manual_title="",
+        input_mode="url",
     )
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -623,11 +626,13 @@ def is_valid_youtube(url: str) -> bool:
     """Validate whether the provided string represents a legitimate YouTube video URL."""
     return extract_video_id(url) is not None
 
-def validate_inputs(url: str) -> tuple[bool, str | None, str | None]:
+def validate_inputs(url: str, is_demo: bool = False) -> tuple[bool, str | None, str | None]:
     """
     Validate input URL and configuration before running the pipeline.
     Returns (is_valid, error_message, video_id).
     """
+    if is_demo:
+        return True, None, "demo_mit_6006"
     url_clean = (url or "").strip()
     if not url_clean:
         return False, "Please enter a YouTube lecture URL before generating.", None
@@ -752,8 +757,14 @@ def load_demo_data():
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIPELINE  (runs inside st.session_state.generating == True)
 # ═══════════════════════════════════════════════════════════════════════════════
-def run_pipeline(url: str, lang_key: str, bar, step_text):
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+def run_pipeline(
+    url: str,
+    lang_key: str,
+    bar,
+    step_text,
+    manual_text: str = "",
+    manual_title: str = "",
+):
     lang_codes = LANGUAGES.get(lang_key, ["en"])
 
     # ── Step 1: Transcript ────────────────────────────────────────────────────
@@ -761,22 +772,31 @@ def run_pipeline(url: str, lang_key: str, bar, step_text):
     bar.progress(5, "📥 Extracting transcript…")
     step_text.markdown("**Step 1/4 — Transcript Extraction**")
 
-    logger.info("Pipeline Step 1: Fetching YouTube transcript for URL: %s", url)
-    from transcript import fetch_transcript, get_transcript_with_timestamps
-    try:
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            fut_raw  = pool.submit(fetch_transcript, url, lang_codes)
-            fut_segs = pool.submit(get_transcript_with_timestamps, url)
-            raw  = fut_raw.result()
-            segs = fut_segs.result()
-    except Exception as e:
-        logger.error("Transcript extraction failed: %s", e)
-        raise RuntimeError(f"Transcript extraction failed: {e}")
+    if manual_text and manual_text.strip():
+        logger.info("Pipeline Step 1: Processing manually provided transcript")
+        from transcript import parse_manual_transcript
+        res = parse_manual_transcript(manual_text, video_title=manual_title)
+        raw = res.full_text
+        segs = res.to_raw_data()
+        title = manual_title.strip() or "Lecture Study Notes (Manual Input)"
+        st.session_state.lecture_title = title
+    else:
+        logger.info("Pipeline Step 1: Fetching YouTube transcript for URL: %s", url)
+        from transcript import get_transcript, friendly_error_message
+        try:
+            res = get_transcript(url, lang_codes)
+            raw = res.full_text
+            segs = res.to_raw_data()
+        except Exception as e:
+            logger.error("Transcript extraction failed: %s", e)
+            msg = friendly_error_message(e)
+            raise RuntimeError(msg)
+
+        vid = extract_video_id(url)
+        st.session_state.lecture_title = f"Lecture Study Notes ({vid})" if vid else "PrepGenius — Study Notes"
 
     st.session_state.raw_transcript      = raw
     st.session_state.transcript_segments = segs
-    vid = extract_video_id(url)
-    st.session_state.lecture_title = f"Lecture Study Notes ({vid})" if vid else "PrepGenius — Study Notes"
 
     # ── Step 2: Text processing ───────────────────────────────────────────────
     st.session_state.progress_step = 1
@@ -1080,6 +1100,17 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
+    st.markdown("#### 🌐 YouTube Network & Proxy")
+    proxy_val = st.text_input(
+        "Proxy URL (Optional)",
+        value=os.getenv("YOUTUBE_PROXY", "") or os.getenv("HTTPS_PROXY", "") or os.getenv("HTTP_PROXY", ""),
+        placeholder="http://host:port or http://user:pass@host:port",
+        help="Configure an HTTP/HTTPS proxy to route YouTube transcript extraction if your IP is rate-limited or blocked.",
+    )
+    if proxy_val:
+        os.environ["YOUTUBE_PROXY"] = proxy_val.strip()
+
+    st.markdown("---")
     st.caption("🔒 Keys are stored in-memory for this session.\n\nYou can also add them to a `.env` file.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1104,80 +1135,145 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="input-card">', unsafe_allow_html=True)
 
-col_url, col_lang, col_fmt, col_btn = st.columns([3.5, 1.8, 1.7, 1.5])
-with col_url:
-    st.markdown('<p class="section-label">📎 YouTube Lecture URL</p>', unsafe_allow_html=True)
-    url = st.text_input(
-        "url",
-        value=st.session_state.url,
-        placeholder="https://www.youtube.com/watch?v=… or https://youtu.be/…",
-        label_visibility="collapsed",
-    )
-    st.session_state.url = url
-with col_lang:
-    st.markdown('<p class="section-label">🌐 Output Language</p>', unsafe_allow_html=True)
-    lang = st.selectbox(
-        "lang",
-        list(LANGUAGES.keys()),
-        index=list(LANGUAGES.keys()).index(st.session_state.language),
-        label_visibility="collapsed",
-    )
-    st.session_state.language = lang
-with col_fmt:
-    st.markdown('<p class="section-label">📋 Notes Format</p>', unsafe_allow_html=True)
-    fmt = st.selectbox(
-        "fmt",
-        ["Detailed", "Concise"],
-        index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
-        label_visibility="collapsed",
-    )
-    st.session_state.notes_format = fmt
-with col_btn:
-    st.markdown('<p class="section-label">&nbsp;</p>', unsafe_allow_html=True)
-    generate_clicked = st.button("🚀 Generate", type="primary", use_container_width=True)
-
-# 1-Click quick test sample buttons
-st.markdown(
-    '<div style="margin-top:10px;margin-bottom:4px;"><span style="font-size:0.75rem;font-weight:700;'
-    'color:#94A3B8;letter-spacing:0.5px;text-transform:uppercase;">Try Sample Lectures:</span></div>',
-    unsafe_allow_html=True,
+input_mode_choice = st.radio(
+    "Choose Input Method",
+    ["📎 YouTube URL", "📝 Paste Transcript / Notes"],
+    index=0 if st.session_state.get("input_mode", "url") == "url" else 1,
+    horizontal=True,
+    label_visibility="collapsed",
 )
-c_demo, c_ex1, c_ex2, c_ex3, c_ex_clear = st.columns([1.8, 1.4, 1.4, 1.4, 0.9])
-with c_demo:
-    if st.button("🎮 Demo (No Key)", type="secondary", use_container_width=True, help="Explore full pipeline using bundled MIT 6.006 lecture notes without any API key"):
-        load_demo_data()
-        st.rerun()
-with c_ex1:
-    if st.button("⚡ MIT Algo", use_container_width=True, help="Load MIT 6.006 Lecture 1 URL"):
-        st.session_state.url = "https://www.youtube.com/watch?v=Kg4bqm1QDIC"
-        st.session_state.error = None
-        st.rerun()
-with c_ex2:
-    if st.button("🤖 Stanford ML", use_container_width=True, help="Load Stanford CS229 ML Lecture URL"):
-        st.session_state.url = "https://www.youtube.com/watch?v=0IAPZzGSbME"
-        st.session_state.error = None
-        st.rerun()
-with c_ex3:
-    if st.button("🧬 CS50", use_container_width=True, help="Load Harvard CS50 Lecture URL"):
-        st.session_state.url = "https://www.youtube.com/watch?v=BkxmsZ4iK6g"
-        st.session_state.error = None
-        st.rerun()
-with c_ex_clear:
-    if st.button("🧹 Clear", use_container_width=True, help="Clear input URL"):
-        st.session_state.url = ""
-        st.session_state.error = None
-        st.session_state.cache_hit_message = None
-        st.rerun()
+st.session_state.input_mode = "url" if input_mode_choice.startswith("📎") else "manual"
 
-# Optional force-reprocess checkbox to bypass session cache
-c_cache_toggle, _ = st.columns([2.5, 3.5])
-with c_cache_toggle:
-    force_reprocess_cb = st.checkbox(
-        "🔄 Force re-process (bypass session cache)",
-        value=st.session_state.get("force_reprocess", False),
-        help="Check this to force running the full pipeline again even if this lecture was already processed in this session.",
+if st.session_state.input_mode == "url":
+    col_url, col_lang, col_fmt, col_btn = st.columns([3.5, 1.8, 1.7, 1.5])
+    with col_url:
+        st.markdown('<p class="section-label">📎 YouTube Lecture URL</p>', unsafe_allow_html=True)
+        url = st.text_input(
+            "url",
+            value=st.session_state.url,
+            placeholder="https://www.youtube.com/watch?v=… or https://youtu.be/…",
+            label_visibility="collapsed",
+        )
+        st.session_state.url = url
+    with col_lang:
+        st.markdown('<p class="section-label">🌐 Output Language</p>', unsafe_allow_html=True)
+        lang = st.selectbox(
+            "lang",
+            list(LANGUAGES.keys()),
+            index=list(LANGUAGES.keys()).index(st.session_state.language),
+            label_visibility="collapsed",
+        )
+        st.session_state.language = lang
+    with col_fmt:
+        st.markdown('<p class="section-label">📋 Notes Format</p>', unsafe_allow_html=True)
+        fmt = st.selectbox(
+            "fmt",
+            ["Detailed", "Concise"],
+            index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
+            label_visibility="collapsed",
+        )
+        st.session_state.notes_format = fmt
+    with col_btn:
+        st.markdown('<p class="section-label">&nbsp;</p>', unsafe_allow_html=True)
+        generate_clicked = st.button("🚀 Generate", type="primary", use_container_width=True)
+
+    # 1-Click quick test sample buttons
+    st.markdown(
+        '<div style="margin-top:10px;margin-bottom:4px;"><span style="font-size:0.75rem;font-weight:700;'
+        'color:#94A3B8;letter-spacing:0.5px;text-transform:uppercase;">Try Sample Lectures:</span></div>',
+        unsafe_allow_html=True,
     )
-    st.session_state.force_reprocess = force_reprocess_cb
+    c_demo, c_ex1, c_ex2, c_ex3, c_ex_clear = st.columns([1.8, 1.4, 1.4, 1.4, 0.9])
+    with c_demo:
+        if st.button("🎮 Demo (No Key)", type="secondary", use_container_width=True, help="Explore full pipeline using bundled MIT 6.006 lecture notes without any API key"):
+            load_demo_data()
+            st.rerun()
+    with c_ex1:
+        if st.button("⚡ MIT Algo", use_container_width=True, help="Load MIT 6.006 Lecture 1 URL"):
+            st.session_state.url = "https://www.youtube.com/watch?v=Kg4bqm1QDIC"
+            st.session_state.error = None
+            st.rerun()
+    with c_ex2:
+        if st.button("🤖 Stanford ML", use_container_width=True, help="Load Stanford CS229 ML Lecture URL"):
+            st.session_state.url = "https://www.youtube.com/watch?v=0IAPZzGSbME"
+            st.session_state.error = None
+            st.rerun()
+    with c_ex3:
+        if st.button("🧬 CS50", use_container_width=True, help="Load Harvard CS50 Lecture URL"):
+            st.session_state.url = "https://www.youtube.com/watch?v=BkxmsZ4iK6g"
+            st.session_state.error = None
+            st.rerun()
+    with c_ex_clear:
+        if st.button("🧹 Clear", use_container_width=True, help="Clear input URL"):
+            st.session_state.url = ""
+            st.session_state.error = None
+            st.session_state.cache_hit_message = None
+            st.rerun()
+
+    # Optional force-reprocess checkbox to bypass session cache
+    c_cache_toggle, _ = st.columns([2.5, 3.5])
+    with c_cache_toggle:
+        force_reprocess_cb = st.checkbox(
+            "🔄 Force re-process (bypass session cache)",
+            value=st.session_state.get("force_reprocess", False),
+            help="Check this to force running the full pipeline again even if this lecture was already processed in this session.",
+        )
+        st.session_state.force_reprocess = force_reprocess_cb
+
+else:
+    # Manual transcript paste mode
+    st.markdown('<p class="section-label">📝 Paste Lecture Transcript / Subtitles or Notes</p>', unsafe_allow_html=True)
+    pasted_txt = st.text_area(
+        "manual_transcript_area",
+        value=st.session_state.get("manual_transcript", ""),
+        height=140,
+        placeholder="Paste transcript here (e.g. copied from YouTube's 'Show transcript' button, or plain notes)...",
+        label_visibility="collapsed",
+    )
+    st.session_state.manual_transcript = pasted_txt
+
+    c_upload, c_title = st.columns([2.5, 3.5])
+    with c_upload:
+        uploaded_file = st.file_uploader("Or upload transcript file (.txt, .srt)", type=["txt", "srt"])
+        if uploaded_file is not None:
+            try:
+                content = uploaded_file.read().decode("utf-8", errors="replace")
+                if content.strip():
+                    st.session_state.manual_transcript = content
+                    pasted_txt = content
+                    st.info(f"Loaded {len(content.split())} words from {uploaded_file.name}")
+            except Exception as e:
+                st.warning(f"Could not read uploaded file: {e}")
+    with c_title:
+        m_title = st.text_input(
+            "Lecture Title (Optional)",
+            value=st.session_state.get("manual_title", ""),
+            placeholder="e.g. CS50 - Lecture 1 (Computer Science)",
+        )
+        st.session_state.manual_title = m_title
+
+    col_m_lang, col_m_fmt, col_m_btn = st.columns([2.5, 2.5, 2.0])
+    with col_m_lang:
+        st.markdown('<p class="section-label">🌐 Output Language</p>', unsafe_allow_html=True)
+        lang = st.selectbox(
+            "m_lang",
+            list(LANGUAGES.keys()),
+            index=list(LANGUAGES.keys()).index(st.session_state.language),
+            label_visibility="collapsed",
+        )
+        st.session_state.language = lang
+    with col_m_fmt:
+        st.markdown('<p class="section-label">📋 Notes Format</p>', unsafe_allow_html=True)
+        fmt = st.selectbox(
+            "m_fmt",
+            ["Detailed", "Concise"],
+            index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
+            label_visibility="collapsed",
+        )
+        st.session_state.notes_format = fmt
+    with col_m_btn:
+        st.markdown('<p class="section-label">&nbsp;</p>', unsafe_allow_html=True)
+        generate_clicked = st.button("🚀 Generate Notes", type="primary", use_container_width=True)
 
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1194,6 +1290,11 @@ if st.session_state.error:
         f'<div class="err-box"><strong>⚠️ Error</strong><br>{st.session_state.error}</div>',
         unsafe_allow_html=True,
     )
+    if "blocked" in st.session_state.error.lower() or "transcript" in st.session_state.error.lower():
+        if st.button("📋 Paste Transcript Manually to Continue", type="secondary"):
+            st.session_state.input_mode = "manual"
+            st.session_state.error = None
+            st.rerun()
 
 # ── API key warning ──
 _nvidia_key = os.getenv("NVIDIA_API_KEY", "")
@@ -1213,14 +1314,22 @@ if not _nvidia_key and not _openai_key:
 if generate_clicked:
     st.session_state.error = None
     st.session_state.cache_hit_message = None
-    raw_url = st.session_state.url.strip()
 
-    # Input validation
-    valid, err_msg, video_id = validate_inputs(raw_url)
-    if not valid:
-        st.session_state.error = err_msg
-        logger.warning("Input validation failed: %s", err_msg)
-        st.rerun()
+    if st.session_state.get("input_mode") == "manual":
+        raw_text = (st.session_state.get("manual_transcript") or "").strip()
+        if not raw_text or len(raw_text.split()) < 5:
+            st.session_state.error = "Please paste or upload transcript text (at least a few sentences) before generating."
+            st.rerun()
+        video_id = None
+        cache_vid = f"manual::{abs(hash(raw_text[:100]))}"
+    else:
+        raw_url = st.session_state.url.strip()
+        valid, err_msg, video_id = validate_inputs(raw_url)
+        if not valid:
+            st.session_state.error = err_msg
+            logger.warning("Input validation failed: %s", err_msg)
+            st.rerun()
+        cache_vid = video_id or raw_url
 
     has_api_key = (
         bool(os.getenv("NVIDIA_API_KEY"))
@@ -1235,7 +1344,6 @@ if generate_clicked:
         st.rerun()
 
     # Session caching check: avoid processing same lecture repeatedly
-    cache_vid = video_id or raw_url
     cache_key = f"{cache_vid}::{st.session_state.language}::{st.session_state.notes_format}::{st.session_state.num_flashcards}"
 
     if cache_key in st.session_state.lecture_cache and not st.session_state.get("force_reprocess", False):
@@ -1276,6 +1384,8 @@ if st.session_state.generating:
             st.session_state.language,
             bar_ph,
             step_ph,
+            manual_text=st.session_state.get("manual_transcript", "") if st.session_state.get("input_mode") == "manual" else "",
+            manual_title=st.session_state.get("manual_title", ""),
         )
         st.session_state.generating = False
         st.session_state.generated = True
