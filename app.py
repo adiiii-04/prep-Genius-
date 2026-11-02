@@ -10,6 +10,7 @@ import csv
 import os
 import re
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 
