@@ -167,6 +167,99 @@ def _create_api_client() -> YouTubeTranscriptApi:
     return YouTubeTranscriptApi(proxy_config=proxy_config, http_client=session)
 
 
+def fetch_transcript_innertube(
+    video_id: str,
+    languages: Optional[list[str]] = None,
+) -> TranscriptResult:
+    """
+    Directly query YouTube's Innertube Player API using the Android client.
+
+    This bypasses YouTube's watch HTML page entirely, avoiding the anti-scraping
+    recaptcha that blocks cloud IPs (like Streamlit Community Cloud / AWS / GCP).
+
+    Args:
+        video_id: 11-character YouTube video ID.
+        languages: List of language codes to prefer (defaults to English variants).
+
+    Returns:
+        TranscriptResult containing caption segments.
+    """
+    if languages is None:
+        languages = ["en", "en-US", "en-GB"]
+
+    api_key = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
+    url = f"https://www.youtube.com/youtubei/v1/player?key={api_key}"
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "ANDROID",
+                "clientVersion": "20.10.38",
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+        "videoId": video_id,
+    }
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip",
+        "Content-Type": "application/json",
+    })
+
+    proxy_url = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+    if proxy_url and proxy_url.strip():
+        session.proxies = {"http": proxy_url.strip(), "https": proxy_url.strip()}
+
+    response = session.post(url, json=payload, timeout=12)
+    response.raise_for_status()
+    data = response.json()
+
+    playability = data.get("playabilityStatus", {})
+    status = playability.get("status")
+    if status != "OK":
+        reason = playability.get("reason", "Video unavailable")
+        if "private" in reason.lower() or "unavailable" in reason.lower():
+            raise VideoUnavailable(video_id)
+        if "login" in reason.lower() or "bot" in reason.lower():
+            raise RequestBlocked(video_id)
+        raise VideoUnavailable(video_id)
+
+    captions_json = data.get("captions", {}).get("playerCaptionsTracklistRenderer")
+    if not captions_json or "captionTracks" not in captions_json:
+        raise TranscriptsDisabled(video_id)
+
+    from youtube_transcript_api._transcripts import TranscriptList
+    transcript_list = TranscriptList.build(session, video_id, captions_json)
+
+    fetched: FetchedTranscript
+    try:
+        fetched = transcript_list.find_transcript(languages).fetch()
+    except NoTranscriptFound:
+        available_codes = [t.language_code for t in transcript_list]
+        transcript = transcript_list.find_transcript(available_codes)
+        if transcript.is_translatable:
+            try:
+                fetched = transcript.translate("en").fetch()
+            except Exception:
+                fetched = transcript.fetch()
+        else:
+            fetched = transcript.fetch()
+
+    segments = [
+        TranscriptSegment(text=snip.text, start=snip.start, duration=snip.duration)
+        for snip in fetched
+    ]
+
+    return TranscriptResult(
+        video_id=video_id,
+        language=fetched.language,
+        language_code=fetched.language_code,
+        is_generated=fetched.is_generated,
+        segments=segments,
+    )
+
+
 def get_transcript(
     url: str,
     languages: Optional[list[str]] = None,

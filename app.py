@@ -783,18 +783,24 @@ def run_pipeline(
         st.session_state.lecture_title = title
     else:
         logger.info("Pipeline Step 1: Fetching YouTube transcript for URL: %s", url)
-        from transcript import get_transcript, friendly_error_message
+        from transcript import get_transcript, fetch_transcript_innertube, friendly_error_message
+        vid = extract_video_id(url)
+        st.session_state.lecture_title = f"Lecture Study Notes ({vid})" if vid else "PrepGenius — Study Notes"
         try:
             res = get_transcript(url, lang_codes)
             raw = res.full_text
             segs = res.to_raw_data()
         except Exception as e:
-            logger.error("Transcript extraction failed: %s", e)
-            msg = friendly_error_message(e)
-            raise RuntimeError(msg)
-
-        vid = extract_video_id(url)
-        st.session_state.lecture_title = f"Lecture Study Notes ({vid})" if vid else "PrepGenius — Study Notes"
+            logger.warning("Standard transcript extraction failed (%s). Attempting direct Innertube fallback...", e)
+            try:
+                res = fetch_transcript_innertube(vid, lang_codes)
+                raw = res.full_text
+                segs = res.to_raw_data()
+                logger.info("Direct Innertube fallback succeeded with %d segments", len(segs))
+            except Exception as fallback_e:
+                logger.error("Transcript extraction failed across all methods: %s", fallback_e)
+                msg = friendly_error_message(e)
+                raise RuntimeError(msg)
 
     st.session_state.raw_transcript      = raw
     st.session_state.transcript_segments = segs
