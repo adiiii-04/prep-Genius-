@@ -153,7 +153,12 @@ def _create_api_client() -> YouTubeTranscriptApi:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     })
 
-    proxy_url = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+    proxy_url = (
+        os.getenv("YOUTUBE_PROXY")
+        or os.getenv("PROXY_URL")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+    )
     proxy_config = None
     if proxy_url and proxy_url.strip():
         try:
@@ -207,7 +212,12 @@ def fetch_transcript_innertube(
         "Content-Type": "application/json",
     })
 
-    proxy_url = os.getenv("YOUTUBE_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("HTTP_PROXY")
+    proxy_url = (
+        os.getenv("YOUTUBE_PROXY")
+        or os.getenv("PROXY_URL")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+    )
     if proxy_url and proxy_url.strip():
         session.proxies = {"http": proxy_url.strip(), "https": proxy_url.strip()}
 

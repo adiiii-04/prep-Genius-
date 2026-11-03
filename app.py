@@ -24,7 +24,17 @@ else:
 # Also support Streamlit Cloud secrets (st.secrets)
 try:
     if hasattr(st, "secrets"):
-        for _secret_key in ["NVIDIA_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "NEMOTRON_MODEL", "NVIDIA_BASE_URL"]:
+        for _secret_key in [
+            "NVIDIA_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "NEMOTRON_MODEL",
+            "NVIDIA_BASE_URL",
+            "YOUTUBE_PROXY",
+            "PROXY_URL",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+        ]:
             if _secret_key in st.secrets and not os.getenv(_secret_key):
                 os.environ[_secret_key] = str(st.secrets[_secret_key])
 except Exception:
@@ -1138,20 +1148,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# INPUT CARD
+# INPUT TABS
 # ═══════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="input-card">', unsafe_allow_html=True)
+tab_url, tab_manual = st.tabs(["🔗 YouTube Lecture URL", "📝 Paste Transcript / Notes"])
 
-input_mode_choice = st.radio(
-    "Choose Input Method",
-    ["📎 YouTube URL", "📝 Paste Transcript / Notes"],
-    index=0 if st.session_state.get("input_mode", "url") == "url" else 1,
-    horizontal=True,
-    label_visibility="collapsed",
-)
-st.session_state.input_mode = "url" if input_mode_choice.startswith("📎") else "manual"
+generate_clicked = False
+manual_generate_clicked = False
 
-if st.session_state.input_mode == "url":
+with tab_url:
     col_url, col_lang, col_fmt, col_btn = st.columns([3.5, 1.8, 1.7, 1.5])
     with col_url:
         st.markdown('<p class="section-label">📎 YouTube Lecture URL</p>', unsafe_allow_html=True)
@@ -1160,6 +1164,7 @@ if st.session_state.input_mode == "url":
             value=st.session_state.url,
             placeholder="https://www.youtube.com/watch?v=… or https://youtu.be/…",
             label_visibility="collapsed",
+            key="input_url_field",
         )
         st.session_state.url = url
     with col_lang:
@@ -1169,6 +1174,7 @@ if st.session_state.input_mode == "url":
             list(LANGUAGES.keys()),
             index=list(LANGUAGES.keys()).index(st.session_state.language),
             label_visibility="collapsed",
+            key="url_lang_select",
         )
         st.session_state.language = lang
     with col_fmt:
@@ -1178,11 +1184,12 @@ if st.session_state.input_mode == "url":
             ["Detailed", "Concise"],
             index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
             label_visibility="collapsed",
+            key="url_fmt_select",
         )
         st.session_state.notes_format = fmt
     with col_btn:
         st.markdown('<p class="section-label">&nbsp;</p>', unsafe_allow_html=True)
-        generate_clicked = st.button("🚀 Generate", type="primary", use_container_width=True)
+        generate_clicked = st.button("🚀 Generate", type="primary", use_container_width=True, key="btn_gen_url")
 
     # 1-Click quick test sample buttons
     st.markdown(
@@ -1227,21 +1234,56 @@ if st.session_state.input_mode == "url":
         )
         st.session_state.force_reprocess = force_reprocess_cb
 
-else:
-    # Manual transcript paste mode
-    st.markdown('<p class="section-label">📝 Paste Lecture Transcript / Subtitles or Notes</p>', unsafe_allow_html=True)
+    # If YouTube blocked this IP, render the 10-second instant fallback inline right here!
+    if st.session_state.error and ("blocked" in st.session_state.error.lower() or "transcript" in st.session_state.error.lower()):
+        target_url = st.session_state.url.strip() or "https://youtube.com"
+        st.markdown(
+            f"""<div style="background:rgba(239,68,68,0.1);border:1px solid #EF4444;border-radius:12px;padding:16px;margin-top:16px;">
+            <div style="color:#FCA5A5;font-weight:700;font-size:1rem;margin-bottom:8px;">⚠️ YouTube Blocked Cloud Server IP (Streamlit Cloud / AWS)</div>
+            <div style="color:#E2E8F0;font-size:0.875rem;line-height:1.6;">
+            YouTube prevents automated caption scraping from cloud data centers. You can bypass this in 10 seconds:
+            <ol style="margin-top:6px;margin-bottom:8px;padding-left:20px;">
+              <li><a href="{target_url}" target="_blank" style="color:#818CF8;font-weight:600;text-decoration:underline;">Click here to open this video on YouTube ↗</a></li>
+              <li>Under the video player, click <strong>"… More"</strong> → click <strong>"Show transcript"</strong>.</li>
+              <li>Select all caption text (or copy lines) from the panel.</li>
+              <li>Paste the text below and click <strong>Generate Study Notes</strong>!</li>
+            </ol>
+            </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        inline_text = st.text_area(
+            "Paste Transcript Text:",
+            height=130,
+            placeholder="Paste transcript copied from YouTube here (e.g. 0:00 Welcome to class...)",
+            key="inline_paste_transcript",
+        )
+        col_in_btn, _ = st.columns([2.5, 3.5])
+        with col_in_btn:
+            if st.button("🚀 Generate from Pasted Transcript", type="primary", key="btn_inline_gen"):
+                if inline_text.strip():
+                    st.session_state.manual_transcript = inline_text.strip()
+                    st.session_state.input_mode = "manual"
+                    st.session_state.error = None
+                    st.session_state.generating = True
+                    st.rerun()
+                else:
+                    st.warning("Please paste some transcript text first.")
+
+with tab_manual:
+    st.markdown('<p class="section-label">📝 Paste Lecture Transcript / Subtitles or Lecture Notes</p>', unsafe_allow_html=True)
     pasted_txt = st.text_area(
         "manual_transcript_area",
         value=st.session_state.get("manual_transcript", ""),
-        height=140,
-        placeholder="Paste transcript here (e.g. copied from YouTube's 'Show transcript' button, or plain notes)...",
+        height=160,
+        placeholder="Paste transcript here (e.g. copied from YouTube's 'Show transcript' panel, subtitles, or raw notes)...",
         label_visibility="collapsed",
     )
     st.session_state.manual_transcript = pasted_txt
 
     c_upload, c_title = st.columns([2.5, 3.5])
     with c_upload:
-        uploaded_file = st.file_uploader("Or upload transcript file (.txt, .srt)", type=["txt", "srt"])
+        uploaded_file = st.file_uploader("Or upload transcript file (.txt, .srt)", type=["txt", "srt"], key="manual_file_uploader")
         if uploaded_file is not None:
             try:
                 content = uploaded_file.read().decode("utf-8", errors="replace")
@@ -1256,33 +1298,34 @@ else:
             "Lecture Title (Optional)",
             value=st.session_state.get("manual_title", ""),
             placeholder="e.g. CS50 - Lecture 1 (Computer Science)",
+            key="manual_title_input",
         )
         st.session_state.manual_title = m_title
 
     col_m_lang, col_m_fmt, col_m_btn = st.columns([2.5, 2.5, 2.0])
     with col_m_lang:
         st.markdown('<p class="section-label">🌐 Output Language</p>', unsafe_allow_html=True)
-        lang = st.selectbox(
+        m_lang = st.selectbox(
             "m_lang",
             list(LANGUAGES.keys()),
             index=list(LANGUAGES.keys()).index(st.session_state.language),
             label_visibility="collapsed",
+            key="manual_lang_select",
         )
-        st.session_state.language = lang
+        st.session_state.language = m_lang
     with col_m_fmt:
         st.markdown('<p class="section-label">📋 Notes Format</p>', unsafe_allow_html=True)
-        fmt = st.selectbox(
+        m_fmt = st.selectbox(
             "m_fmt",
             ["Detailed", "Concise"],
             index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
             label_visibility="collapsed",
+            key="manual_fmt_select",
         )
-        st.session_state.notes_format = fmt
+        st.session_state.notes_format = m_fmt
     with col_m_btn:
         st.markdown('<p class="section-label">&nbsp;</p>', unsafe_allow_html=True)
-        generate_clicked = st.button("🚀 Generate Notes", type="primary", use_container_width=True)
-
-st.markdown("</div>", unsafe_allow_html=True)
+        manual_generate_clicked = st.button("🚀 Generate Notes", type="primary", use_container_width=True, key="btn_gen_manual")
 
 # Cache hit notification
 if st.session_state.get("cache_hit_message"):
@@ -1297,11 +1340,6 @@ if st.session_state.error:
         f'<div class="err-box"><strong>⚠️ Error</strong><br>{st.session_state.error}</div>',
         unsafe_allow_html=True,
     )
-    if "blocked" in st.session_state.error.lower() or "transcript" in st.session_state.error.lower():
-        if st.button("📋 Paste Transcript Manually to Continue", type="secondary"):
-            st.session_state.input_mode = "manual"
-            st.session_state.error = None
-            st.rerun()
 
 # ── API key warning ──
 _nvidia_key = os.getenv("NVIDIA_API_KEY", "")
@@ -1318,11 +1356,12 @@ if not _nvidia_key and not _openai_key:
 # ═══════════════════════════════════════════════════════════════════════════════
 # GENERATION TRIGGER
 # ═══════════════════════════════════════════════════════════════════════════════
-if generate_clicked:
+if generate_clicked or manual_generate_clicked:
     st.session_state.error = None
     st.session_state.cache_hit_message = None
 
-    if st.session_state.get("input_mode") == "manual":
+    if manual_generate_clicked:
+        st.session_state.input_mode = "manual"
         raw_text = (st.session_state.get("manual_transcript") or "").strip()
         if not raw_text or len(raw_text.split()) < 5:
             st.session_state.error = "Please paste or upload transcript text (at least a few sentences) before generating."
@@ -1330,6 +1369,7 @@ if generate_clicked:
         video_id = None
         cache_vid = f"manual::{abs(hash(raw_text[:100]))}"
     else:
+        st.session_state.input_mode = "url"
         raw_url = st.session_state.url.strip()
         valid, err_msg, video_id = validate_inputs(raw_url)
         if not valid:
