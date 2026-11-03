@@ -708,6 +708,8 @@ def build_anki_package_bytes() -> bytes:
 def build_pdf_bytes() -> bytes:
     from export import build_pdf_bytes as _build_pdf
     doc_title = st.session_state.get("lecture_title") or "PrepGenius — Study Notes"
+    video_url = st.session_state.get("url", "").strip()
+    video_id = extract_video_id(video_url) or ""
     try:
         return _build_pdf(
             revision_notes=st.session_state.revision_notes,
@@ -715,9 +717,37 @@ def build_pdf_bytes() -> bytes:
             quiz_questions=st.session_state.quiz,
             title=doc_title,
             topics=st.session_state.topics or None,
+            video_url=video_url,
+            video_id=video_id,
         )
     except Exception as e:
         return f"PDF generation failed: {e}".encode()
+
+
+def build_notes_only_pdf_bytes() -> bytes:
+    """Build a notes-only PDF for the Save as PDF button in the Revision Notes tab."""
+    from export import build_notes_only_pdf_bytes as _build_notes_pdf
+    doc_title = st.session_state.get("lecture_title") or "PrepGenius — Study Notes"
+    video_url = st.session_state.get("url", "").strip()
+    video_id = extract_video_id(video_url) or ""
+    try:
+        return _build_notes_pdf(
+            revision_notes=st.session_state.revision_notes,
+            title=doc_title,
+            video_url=video_url,
+            video_id=video_id,
+            topics=st.session_state.topics or None,
+        )
+    except Exception as e:
+        return f"PDF generation failed: {e}".encode()
+
+
+def _safe_pdf_filename(title: str) -> str:
+    """Generate a sanitised PDF filename from the lecture title."""
+    slug = re.sub(r"[^\w\s-]", "", title).strip()
+    slug = re.sub(r"[\s_-]+", "_", slug)
+    slug = slug[:80] or "Lecture_Notes"
+    return f"Lecture_Notes_{slug}.pdf"
 
 def build_quiz_json_export() -> bytes:
     """Build a JSON export of the current quiz questions and results (if available)."""
@@ -1480,8 +1510,9 @@ if st.session_state.generated:
     st.markdown("#### 📥 Download Center")
     dl1, dl2, dl3, dl4, dl5 = st.columns(5)
     with dl1:
+        _pdf_dl_title = st.session_state.get("lecture_title") or "Study_Notes"
         st.download_button("📄 PDF Report", data=build_pdf_bytes(),
-                           file_name="prepgenius_notes.pdf", mime="application/pdf",
+                           file_name=_safe_pdf_filename(_pdf_dl_title), mime="application/pdf",
                            use_container_width=True)
     with dl2:
         st.download_button("📝 Markdown Notes", data=build_markdown_export(),
@@ -1520,6 +1551,50 @@ if st.session_state.generated:
                 unsafe_allow_html=True,
             )
         st.markdown(st.session_state.revision_notes)
+
+        # ── Save as PDF — prominent panel shown once notes are ready ──────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="ok-box">✅ <strong>Your Study Notes Are Ready!</strong> '
+            'Save them as a professionally formatted PDF — ideal for offline revision and exam prep.</div>',
+            unsafe_allow_html=True,
+        )
+        _notes_title = st.session_state.get("lecture_title") or "Study_Notes"
+        _notes_pdf_fn = _safe_pdf_filename(_notes_title)
+        _notes_md_fn = re.sub(r"[^\w\s-]", "", _notes_title).strip().replace(" ", "_")[:60] or "Notes"
+        _col_pdf, _col_md, _col_info = st.columns([1.8, 1.8, 2.4])
+        with _col_pdf:
+            _notes_pdf_data = build_notes_only_pdf_bytes()
+            if isinstance(_notes_pdf_data, bytes) and _notes_pdf_data[:4] == b"%PDF":
+                st.download_button(
+                    "📥 Save as PDF",
+                    data=_notes_pdf_data,
+                    file_name=_notes_pdf_fn,
+                    mime="application/pdf",
+                    use_container_width=True,
+                    key="btn_save_notes_pdf_tab",
+                    help=f"Download: {_notes_pdf_fn}",
+                )
+            else:
+                st.error("⚠️ PDF generation failed — see Download Center above for the full report.")
+        with _col_md:
+            st.download_button(
+                "📝 Download Markdown",
+                data=build_markdown_export(),
+                file_name=f"Lecture_Notes_{_notes_md_fn}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="btn_save_notes_md_tab",
+                help="Download your study notes as a Markdown (.md) file",
+            )
+        with _col_info:
+            st.markdown(
+                f'<div style="padding:0.55rem 0;font-size:0.82rem;color:#94A3B8;line-height:1.7;">'
+                f'<strong style="color:#E2E8F0;">📄 {_notes_pdf_fn}</strong><br>'
+                f'University-style PDF · Cover page · Page numbers · Formatted headings'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
     # ── Topics ────────────────────────────────────────────────────────────
     with tab_topics:
