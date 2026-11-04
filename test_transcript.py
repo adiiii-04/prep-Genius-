@@ -515,3 +515,58 @@ Machine learning is a subset of AI."""
         from transcript import parse_manual_transcript
         with pytest.raises(ValueError, match="cannot be empty"):
             parse_manual_transcript("   \n  ")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. fetch_transcript_ytdlp tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestFetchTranscriptYtdlp:
+    """Tests for yt-dlp based transcript fetching and parsing."""
+
+    def test_ytdlp_json3_parsing(self, monkeypatch):
+        from transcript import fetch_transcript_ytdlp
+
+        mock_info = {
+            "title": "Test Educational Lecture",
+            "subtitles": {},
+            "automatic_captions": {
+                "en": [{"ext": "json3", "url": "https://example.com/timedtext?fmt=json3"}]
+            },
+        }
+
+        class MockYoutubeDL:
+            def __init__(self, opts):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def extract_info(self, url, download=False):
+                return mock_info
+
+        monkeypatch.setattr("yt_dlp.YoutubeDL", MockYoutubeDL)
+
+        mock_json_response = {
+            "events": [
+                {"tStartMs": 0, "dDurationMs": 2500, "segs": [{"utf8": "Hello world"}]},
+                {"tStartMs": 3000, "dDurationMs": 1500, "segs": [{"utf8": "Welcome to class"}]},
+            ]
+        }
+
+        class MockResponse:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return mock_json_response
+
+        monkeypatch.setattr("requests.get", lambda url, **kwargs: MockResponse())
+
+        res, title = fetch_transcript_ytdlp("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        assert title == "Test Educational Lecture"
+        assert len(res.segments) == 2
+        assert res.segments[0].text == "Hello world"
+        assert res.segments[0].start == 0.0
+        assert res.segments[1].text == "Welcome to class"
+        assert res.segments[1].start == 3.0

@@ -270,6 +270,151 @@ def fetch_transcript_innertube(
     )
 
 
+def fetch_transcript_ytdlp(
+    url_or_video_id: str,
+    languages: Optional[list[str]] = None,
+) -> tuple[TranscriptResult, str]:
+    """
+    Extract transcript segments and video title using yt-dlp.
+
+    yt-dlp uses resilient YouTube client emulation that bypasses
+    the IP-blocking challenges faced by simple scrapers on cloud providers
+    (like Streamlit Community Cloud / AWS EC2).
+
+    Args:
+        url_or_video_id: Full YouTube URL or 11-char video ID.
+        languages: Preferred BCP-47 language codes (e.g. ['en', 'en-US']).
+
+    Returns:
+        tuple of (TranscriptResult, video_title_str)
+    """
+    import yt_dlp
+
+    if languages is None:
+        languages = ["en", "en-US", "en-GB"]
+
+    if "youtube" in url_or_video_id or "youtu.be" in url_or_video_id:
+        vid = extract_video_id(url_or_video_id)
+    else:
+        vid = url_or_video_id.strip()
+
+    url = f"https://www.youtube.com/watch?v={vid}"
+
+    proxy_url = (
+        os.getenv("YOUTUBE_PROXY")
+        or os.getenv("PROXY_URL")
+        or os.getenv("HTTPS_PROXY")
+        or os.getenv("HTTP_PROXY")
+    )
+
+    ydl_opts = {
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "quiet": True,
+        "no_warnings": True,
+        "cachedir": False,
+    }
+    if proxy_url and proxy_url.strip():
+        ydl_opts["proxy"] = proxy_url.strip()
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        video_title = info.get("title", "")
+        subs = info.get("subtitles", {})
+        auto = info.get("automatic_captions", {})
+
+        target_tracks = None
+        lang_code = "en"
+        is_gen = False
+
+        # 1. Prefer creator-uploaded subtitles matching requested language
+        for lang in languages:
+            clean_lang = lang.split("-")[0].lower()
+            for k in [lang, clean_lang]:
+                if k in subs:
+                    target_tracks = subs[k]
+                    lang_code = k
+                    break
+            if target_tracks:
+                break
+
+        # 2. Prefer auto subtitles matching requested language
+        if not target_tracks:
+            for lang in languages:
+                clean_lang = lang.split("-")[0].lower()
+                for k in [lang, clean_lang]:
+                    if k in auto:
+                        target_tracks = auto[k]
+                        lang_code = k
+                        is_gen = True
+                        break
+                if target_tracks:
+                    break
+
+        # 3. Fall back to ANY creator-uploaded subtitles
+        if not target_tracks and subs:
+            lang_code = next(iter(subs))
+            target_tracks = subs[lang_code]
+
+        # 4. Fall back to ANY auto subtitles (avoiding &tlang 429 block)
+        if not target_tracks and auto:
+            lang_code = next(iter(auto))
+            target_tracks = auto[lang_code]
+            is_gen = True
+
+        if not target_tracks:
+            raise NoTranscriptFound(vid)
+
+        entry = next((f for f in target_tracks if f.get("ext") == "json3"), target_tracks[0])
+        sub_url = entry["url"]
+        # Strip &tlang if present to avoid 429 translation block on cloud IPs
+        clean_sub_url = re.sub(r"&tlang=[a-zA-Z-]+", "", sub_url)
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+        }
+        proxies = {"http": proxy_url.strip(), "https": proxy_url.strip()} if proxy_url and proxy_url.strip() else None
+
+        r = requests.get(clean_sub_url, headers=headers, proxies=proxies, timeout=12)
+        if r.status_code == 429:
+            r = requests.get(sub_url, headers=headers, proxies=proxies, timeout=12)
+        r.raise_for_status()
+
+        segments = []
+        if entry.get("ext") == "json3" or "json3" in clean_sub_url:
+            data = r.json()
+            for ev in data.get("events", []):
+                if "segs" in ev:
+                    text = "".join(s.get("utf8", "") for s in ev["segs"]).replace("\n", " ").strip()
+                    if text:
+                        start = float(ev.get("tStartMs", 0)) / 1000.0
+                        dur = float(ev.get("dDurationMs", 0)) / 1000.0
+                        segments.append(TranscriptSegment(text=text, start=start, duration=dur))
+        else:
+            lines = [
+                re.sub(r"<[^>]+>", "", line).strip()
+                for line in r.text.splitlines()
+                if line.strip() and not line.startswith("WEBVTT") and "-->" not in line
+            ]
+            segments = [
+                TranscriptSegment(text=l, start=float(i * 3), duration=3.0)
+                for i, l in enumerate(lines)
+                if l
+            ]
+
+        if not segments:
+            raise NoTranscriptFound(vid)
+
+        return TranscriptResult(
+            video_id=vid,
+            language=lang_code,
+            language_code=lang_code,
+            is_generated=is_gen,
+            segments=segments,
+        ), video_title
+
+
 def get_transcript(
     url: str,
     languages: Optional[list[str]] = None,

@@ -823,30 +823,63 @@ def run_pipeline(
         st.session_state.lecture_title = title
     else:
         logger.info("Pipeline Step 1: Fetching YouTube transcript for URL: %s", url)
-        from transcript import get_transcript, fetch_transcript_innertube, friendly_error_message
+        from transcript import (
+            get_transcript,
+            fetch_transcript_ytdlp,
+            fetch_transcript_innertube,
+            friendly_error_message,
+        )
         vid = extract_video_id(url)
         st.session_state.lecture_title = f"Lecture Study Notes ({vid})" if vid else "PrepGenius — Study Notes"
+        extracted = False
+
+        # Attempt 1: yt-dlp (bypasses cloud IP blocking and anti-scraping challenges on AWS / Streamlit Cloud)
         try:
-            res = get_transcript(url, lang_codes)
+            logger.info("Attempting extraction via yt-dlp...")
+            res, extracted_title = fetch_transcript_ytdlp(url, lang_codes)
             raw = res.full_text
             segs = res.to_raw_data()
-        except Exception as e:
-            logger.warning("Standard transcript extraction failed (%s). Attempting direct Innertube fallback...", e)
+            if extracted_title and extracted_title.strip():
+                st.session_state.lecture_title = extracted_title.strip()
+            extracted = True
+            logger.info("yt-dlp extraction succeeded with %d segments", len(segs))
+        except Exception as ytdlp_e:
+            logger.warning("yt-dlp extraction failed: %s. Trying standard API...", ytdlp_e)
+
+        # Attempt 2: standard youtube_transcript_api
+        if not extracted:
+            try:
+                res = get_transcript(url, lang_codes)
+                raw = res.full_text
+                segs = res.to_raw_data()
+                extracted = True
+                logger.info("Standard transcript API succeeded with %d segments", len(segs))
+            except Exception as std_e:
+                logger.warning("Standard transcript extraction failed: %s. Trying Innertube fallback...", std_e)
+
+        # Attempt 3: direct Android Innertube fallback
+        if not extracted:
             try:
                 res = fetch_transcript_innertube(vid, lang_codes)
                 raw = res.full_text
                 segs = res.to_raw_data()
+                extracted = True
                 logger.info("Direct Innertube fallback succeeded with %d segments", len(segs))
-            except Exception as fallback_e:
-                from sample_data import SAMPLE_TRANSCRIPT_SEGMENTS
-                if vid in ("Kg4bqm1QDIC", "demo_mit_6006") or "Kg4bqm1QDIC" in url:
-                    logger.info("Using bundled transcript fallback for sample lecture %s", vid)
-                    segs = SAMPLE_TRANSCRIPT_SEGMENTS
-                    raw = "\n".join(s["text"] for s in segs)
-                else:
-                    logger.error("Transcript extraction failed across all methods: %s", fallback_e)
-                    msg = friendly_error_message(e)
-                    raise RuntimeError(msg)
+            except Exception as fb_e:
+                logger.warning("Direct Innertube fallback failed: %s", fb_e)
+
+        # Attempt 4: bundled transcript for sample MIT lecture
+        if not extracted:
+            from sample_data import SAMPLE_TRANSCRIPT_SEGMENTS
+            if vid in ("Kg4bqm1QDIC", "demo_mit_6006") or "Kg4bqm1QDIC" in url:
+                logger.info("Using bundled transcript fallback for sample lecture %s", vid)
+                segs = SAMPLE_TRANSCRIPT_SEGMENTS
+                raw = "\n".join(s["text"] for s in segs)
+                extracted = True
+            else:
+                last_err = ytdlp_e if "ytdlp_e" in locals() else (std_e if "std_e" in locals() else fb_e)
+                msg = friendly_error_message(last_err)
+                raise RuntimeError(msg)
 
     st.session_state.raw_transcript      = raw
     st.session_state.transcript_segments = segs
@@ -1250,7 +1283,7 @@ with tab_url:
             st.rerun()
     with c_ex3:
         if st.button("🧬 CS50", use_container_width=True, help="Load Harvard CS50 Lecture URL"):
-            st.session_state.url = "https://www.youtube.com/watch?v=BkxmsZ4iK6g"
+            st.session_state.url = "https://www.youtube.com/watch?v=8mAITcNt710"
             st.session_state.error = None
             st.rerun()
     with c_ex_clear:

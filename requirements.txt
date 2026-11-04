@@ -3,6 +3,7 @@ streamlit>=1.35.0
 
 # ── YouTube Transcript ─────────────────────────────────────────────────────────
 youtube-transcript-api>=0.6.2
+yt-dlp>=2024.10.0
 
 # ── AI / NLP ───────────────────────────────────────────────────────────────────
 langchain>=0.3.0                    # LangChain framework for summarization
