@@ -396,12 +396,33 @@ MERGE_HUMAN_PROMPT = (
 def _get_format_instructions(format_type: str) -> str:
     """Return specific prompt instructions based on concise vs detailed format."""
     normalized = str(format_type).strip().lower()
-    if normalized == "concise":
+    # Both "concise" and "handwritten" use the concise content generation style;
+    # the handwritten visual styling is applied separately at the display/export layer.
+    if normalized in ("concise", "handwritten"):
         return (
-            "- STYLE: CONCISE.\n"
-            "- Use tight bullet points, high-yield takeaways, condensed definitions, and direct formulas.\n"
-            "- Eliminate conversational filler and verbose prose while keeping all technical facts intact.\n"
-            "- Keep checklist focused on the most critical high-yield exam points."
+            "- STYLE: CONCISE — SHORT REVISION NOTES OPTIMISED FOR QUICK EXAM PREPARATION.\n"
+            "- TARGET LENGTH: Produce notes that are 40-55% shorter than a detailed treatment.\n"
+            "- INCLUDE ONLY:\n"
+            "    • Important definitions (one crisp sentence each)\n"
+            "    • Key concepts (name + one-line explanation)\n"
+            "    • Important formulas and equations (must keep all)\n"
+            "    • Essential facts, laws, or rules\n"
+            "    • Important differences / comparisons (as a compact table or paired bullets)\n"
+            "    • Main headings and subheadings (keep structural skeleton)\n"
+            "    • Important examples ONLY when they directly illustrate a core concept\n"
+            "- STRICTLY EXCLUDE:\n"
+            "    • Introductory background that does not add technical value\n"
+            "    • Repeated information even if phrased differently across sections\n"
+            "    • Long prose explanations — replace with bullet points\n"
+            "    • Filler phrases ('In this section we will…', 'As mentioned earlier…')\n"
+            "    • Peripheral examples and analogies that are not exam-relevant\n"
+            "- FORMAT RULES:\n"
+            "    • Use short, direct sentences (≤ 20 words where possible)\n"
+            "    • Use bullet points (- ) for lists; never use long paragraphs\n"
+            "    • Bold important keywords using **keyword**\n"
+            "    • Preserve all formulas and technical accuracy\n"
+            "    • Do NOT repeat the same fact in multiple sections\n"
+            "- CHECKLIST: Focus only on the top 5-8 most critical exam questions."
         )
     return (
         "- STYLE: DETAILED.\n"

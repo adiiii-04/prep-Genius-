@@ -582,6 +582,376 @@ def build_notes_only_pdf_bytes(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Handwritten Notebook-Style PDF Builder
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Handwritten notebook colour palette
+_HW_PAGE_BG      = colors.HexColor("#F7F9FF")   # very light blue-white (notebook page)
+_HW_LINE_COL     = colors.HexColor("#B8D0E8")   # soft blue ruled lines
+_HW_MARGIN_COL   = colors.HexColor("#E8A0A0")   # pinkish-red margin line
+_HW_INK          = colors.HexColor("#1A237E")   # deep navy ink (blue-black pen)
+_HW_INK_H1       = colors.HexColor("#0D47A1")   # slightly brighter blue for H1
+_HW_INK_H2       = colors.HexColor("#1565C0")   # heading 2
+_HW_INK_H3       = colors.HexColor("#283593")   # heading 3
+_HW_HIGHLIGHT    = colors.HexColor("#FFF9C4")   # light yellow marker highlight
+_HW_FORMULA_BG   = colors.HexColor("#E8EAF6")   # lavender tint for formula boxes
+_HW_FORMULA_BD   = colors.HexColor("#9FA8DA")   # formula box border
+
+# Notebook page geometry
+_HW_MARGIN_LR    = 2.6 * cm    # left content margin (after the red margin line)
+_HW_MARGIN_RIGHT = 1.8 * cm
+_HW_MARGIN_TOP   = 2.2 * cm
+_HW_MARGIN_BOT   = 2.0 * cm
+_HW_FOOTER_H     = 1.0 * cm
+_HW_LINE_SPACING = 0.56 * cm  # ruled line pitch (≈ college-rule notebook)
+_HW_RED_MARGIN_X = 2.0 * cm   # x-position of the red vertical margin line
+
+
+def _hw_page_background(canvas: rl_canvas.Canvas, doc: BaseDocTemplate) -> None:
+    """
+    Draw the notebook-paper background on every page:
+      - Light blue page fill
+      - Horizontal ruled lines at college-rule spacing
+      - Red vertical margin line on the left
+      - Page number at the bottom
+    """
+    canvas.saveState()
+    pw, ph = A4
+
+    # Page background
+    canvas.setFillColor(_HW_PAGE_BG)
+    canvas.rect(0, 0, pw, ph, stroke=0, fill=1)
+
+    # Horizontal ruled lines (starting below the top margin, stopping above footer)
+    canvas.setStrokeColor(_HW_LINE_COL)
+    canvas.setLineWidth(0.4)
+    top_start = ph - _HW_MARGIN_TOP + 0.2 * cm
+    bottom_stop = _HW_MARGIN_BOT + _HW_FOOTER_H
+    y = top_start
+    while y > bottom_stop:
+        canvas.line(_HW_RED_MARGIN_X - 0.1 * cm, y, pw - _HW_MARGIN_RIGHT + 0.2 * cm, y)
+        y -= _HW_LINE_SPACING
+
+    # Red vertical margin line
+    canvas.setStrokeColor(_HW_MARGIN_COL)
+    canvas.setLineWidth(1.2)
+    canvas.line(_HW_RED_MARGIN_X, bottom_stop - 0.3 * cm, _HW_RED_MARGIN_X, ph - 0.4 * cm)
+
+    # Footer: page number
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(_HW_INK)
+    canvas.drawCentredString(pw / 2, _HW_FOOTER_H * 0.55, f"— {doc.page} —")
+
+    canvas.restoreState()
+
+
+def _make_hw_styles() -> dict[str, ParagraphStyle]:
+    """Create ParagraphStyles for the handwritten notebook PDF."""
+    base = getSampleStyleSheet()
+    styles: dict[str, ParagraphStyle] = {}
+
+    def _s(name: str, parent: str = "Normal", **kw) -> ParagraphStyle:
+        s = ParagraphStyle(name, parent=base[parent], **kw)
+        styles[name] = s
+        return s
+
+    # Title / cover
+    _s("HW_Title", "Title",
+       fontSize=20, textColor=_HW_INK_H1,
+       spaceAfter=6, spaceBefore=4, leading=24,
+       fontName="Helvetica-Bold")
+
+    _s("HW_Subtitle", "Normal",
+       fontSize=9, textColor=colors.HexColor("#5C6BC0"),
+       spaceAfter=10, leading=12)
+
+    # Heading levels — slightly larger, bold, indented past the margin
+    _s("HW_H1", "Heading1",
+       fontSize=14, textColor=_HW_INK_H1,
+       spaceBefore=14, spaceAfter=4, leading=18,
+       fontName="Helvetica-Bold", leftIndent=0)
+
+    _s("HW_H2", "Heading2",
+       fontSize=12, textColor=_HW_INK_H2,
+       spaceBefore=10, spaceAfter=3, leading=15,
+       fontName="Helvetica-Bold", leftIndent=4)
+
+    _s("HW_H3", "Heading3",
+       fontSize=11, textColor=_HW_INK_H3,
+       spaceBefore=7, spaceAfter=2, leading=14,
+       fontName="Helvetica-BoldOblique", leftIndent=8)
+
+    # Body text
+    _s("HW_Body", "Normal",
+       fontSize=10, textColor=_HW_INK,
+       leading=14, spaceAfter=4, leftIndent=4)
+
+    # Bullet items
+    _s("HW_Bullet", "Normal",
+       fontSize=10, textColor=_HW_INK,
+       leading=14, spaceAfter=3,
+       leftIndent=18, firstLineIndent=0)
+
+    # Numbered list items
+    _s("HW_Numbered", "Normal",
+       fontSize=10, textColor=_HW_INK,
+       leading=14, spaceAfter=3,
+       leftIndent=18, firstLineIndent=0)
+
+    # Formula / equation box
+    _s("HW_Formula", "Normal",
+       fontSize=10, textColor=colors.HexColor("#1A237E"),
+       leading=14, spaceAfter=4, leftIndent=10,
+       fontName="Courier", backColor=_HW_FORMULA_BG,
+       borderColor=_HW_FORMULA_BD, borderWidth=0.5,
+       borderPad=4)
+
+    # Highlighted keyword line
+    _s("HW_Highlight", "Normal",
+       fontSize=10, textColor=colors.HexColor("#0D47A1"),
+       leading=14, spaceAfter=3, leftIndent=4,
+       backColor=_HW_HIGHLIGHT)
+
+    return styles
+
+
+def _hw_notes_to_story(notes: str, styles: dict[str, ParagraphStyle]) -> list:
+    """
+    Convert Markdown revision notes to Platypus flowables styled as
+    handwritten notebook entries.
+
+    Handles:
+      - ## / ### headings → HW_H1 / HW_H2 / HW_H3
+      - Bullet lines (- / * / •) → HW_Bullet with ✎ bullet glyph
+      - Numbered lines (1. 2. …) → HW_Numbered
+      - Bold **text** → bold inline markup
+      - Formula-looking lines → HW_Formula style
+      - Blank lines → small Spacer
+    """
+    story = []
+
+    # Detect formula lines before stripping
+    formula_lines = _detect_formula_lines(notes)
+
+    # Regex patterns
+    re_h1   = re.compile(r"^#{1,2}\s+(.+)$")
+    re_h2   = re.compile(r"^#{3}\s+(.+)$")
+    re_h3   = re.compile(r"^#{4,6}\s+(.+)$")
+    re_bull = re.compile(r"^[\-\*\+•]\s+(.+)$")
+    re_num  = re.compile(r"^(\d+)[.)]\s+(.+)$")
+    re_hr   = re.compile(r"^[-*_]{3,}\s*$")
+    re_bold = re.compile(r"\*\*(.+?)\*\*")
+    re_ital = re.compile(r"\*(.+?)\*")
+    re_code = re.compile(r"`(.+?)`")
+    re_chk  = re.compile(r"^-\s*\[\s*[xX ]?\s*\]\s*(.+)$")  # - [ ] checklist
+
+    def _inline(text: str) -> str:
+        """Convert inline markdown (bold, italic, code) to ReportLab XML tags."""
+        t = _escape_xml(text)
+        t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+        t = re.sub(r"\*(.+?)\*",     r"<i>\1</i>", t)
+        t = re.sub(r"`(.+?)`",       r"<font name='Courier'>\1</font>", t)
+        return t
+
+    for line in notes.splitlines():
+        raw = line.rstrip()
+
+        # Blank line
+        if not raw.strip():
+            story.append(Spacer(1, _HW_LINE_SPACING * 0.6))
+            continue
+
+        stripped = raw.strip()
+
+        # Horizontal rule → styled separator
+        if re_hr.match(stripped):
+            story.append(HRFlowable(
+                width="88%", thickness=0.6,
+                color=_HW_LINE_COL, spaceAfter=4, spaceBefore=4,
+            ))
+            continue
+
+        # Formula lines
+        if stripped in formula_lines:
+            story.append(Paragraph(_escape_xml(stripped), styles["HW_Formula"]))
+            continue
+
+        # Checklist items (- [ ] …)
+        m_chk = re_chk.match(stripped)
+        if m_chk:
+            content = _inline(m_chk.group(1))
+            story.append(Paragraph(f"☐  {content}", styles["HW_Bullet"]))
+            continue
+
+        # Headings
+        m_h1 = re_h1.match(stripped)
+        m_h2 = re_h2.match(stripped)
+        m_h3 = re_h3.match(stripped)
+
+        if m_h1 and not m_h2 and not m_h3:
+            story.append(Paragraph(_inline(m_h1.group(1)), styles["HW_H1"]))
+            continue
+        if m_h2:
+            story.append(Paragraph(_inline(m_h2.group(1)), styles["HW_H2"]))
+            continue
+        if m_h3:
+            story.append(Paragraph(_inline(m_h3.group(1)), styles["HW_H3"]))
+            continue
+
+        # Bullet items
+        m_bull = re_bull.match(stripped)
+        if m_bull:
+            content = _inline(m_bull.group(1))
+            story.append(Paragraph(f"✎  {content}", styles["HW_Bullet"]))
+            continue
+
+        # Numbered items
+        m_num = re_num.match(stripped)
+        if m_num:
+            num = m_num.group(1)
+            content = _inline(m_num.group(2))
+            story.append(Paragraph(f"{num}.  {content}", styles["HW_Numbered"]))
+            continue
+
+        # Bold keyword lines (entire line is **keyword** or starts with **)
+        if stripped.startswith("**") and re.match(r"^\*\*.+\*\*[\s:]*$", stripped):
+            story.append(Paragraph(_inline(stripped), styles["HW_Highlight"]))
+            continue
+
+        # Regular body text
+        story.append(Paragraph(_inline(stripped), styles["HW_Body"]))
+
+    return story
+
+
+def build_handwritten_pdf_bytes(
+    revision_notes: str,
+    title: str = _DEFAULT_TITLE,
+    video_url: str = "",
+    video_id: str = "",
+    topics: Optional[Sequence[Any]] = None,
+    font_warning: Optional[str] = None,
+) -> bytes:
+    """
+    Build a handwritten notebook-style PDF from revision notes.
+
+    Visual design:
+      - Light blue ruled notebook paper background (every page)
+      - Red vertical margin line on the left
+      - Deep navy/blue ink-style text
+      - Heading levels styled as hand-lettered titles
+      - Bullet points with a pen-mark glyph (✎)
+      - Formula lines in a lavender-tinted monospaced box
+      - Highlighted keyword lines (yellow marker effect)
+      - Page numbers centred at the bottom
+
+    Uses ReportLab's built-in Helvetica family (always available) for
+    clean, legible rendering without external font dependencies.
+
+    Args:
+        revision_notes: Markdown-formatted revision notes string.
+        title:          Document title.
+        video_url:      Source YouTube URL (shown on cover).
+        video_id:       YouTube video ID (shown on cover).
+        topics:         Optional topic list for the Key Topics section.
+        font_warning:   Optional warning message to display if a custom font
+                        could not be loaded (reserved for future use).
+
+    Returns:
+        Raw PDF bytes suitable for st.download_button or disk writing.
+    """
+    styles = _make_hw_styles()
+    buf = io.BytesIO()
+
+    pw, ph = A4
+    content_w = pw - _HW_MARGIN_LR - _HW_MARGIN_RIGHT
+    content_h = ph - _HW_MARGIN_TOP - _HW_MARGIN_BOT - _HW_FOOTER_H
+
+    frame = Frame(
+        _HW_MARGIN_LR,
+        _HW_MARGIN_BOT + _HW_FOOTER_H,
+        content_w,
+        content_h,
+        id="hw_main",
+        leftPadding=0,
+        rightPadding=0,
+        topPadding=0,
+        bottomPadding=0,
+    )
+    pt = PageTemplate(
+        id="hw_page",
+        frames=[frame],
+        onPage=_hw_page_background,
+    )
+    doc = BaseDocTemplate(
+        buf,
+        pagesize=A4,
+        pageTemplates=[pt],
+        title=title,
+        author=_APP_NAME,
+        creator=_APP_NAME,
+        leftMargin=_HW_MARGIN_LR,
+        rightMargin=_HW_MARGIN_RIGHT,
+        topMargin=_HW_MARGIN_TOP,
+        bottomMargin=_HW_MARGIN_BOT + _HW_FOOTER_H,
+    )
+
+    story: list = []
+
+    # ── Cover / Header ────────────────────────────────────────────────────────
+    story.append(Spacer(1, 0.4 * cm))
+    story.append(Paragraph(
+        "<font color='#9FA8DA' size='9'>✏️  Handwritten Study Notes  ·  " + _APP_NAME + "</font>",
+        styles["HW_Subtitle"],
+    ))
+    story.append(Paragraph(_escape_xml(title), styles["HW_Title"]))
+
+    meta_parts = [f"Date: {_now_str()}"]
+    if video_url:
+        meta_parts.append(f"Source: {_escape_xml(video_url[:80])}")
+    if video_id:
+        meta_parts.append(f"ID: {_escape_xml(video_id)}")
+    story.append(Paragraph(
+        "  ·  ".join(meta_parts),
+        styles["HW_Subtitle"],
+    ))
+
+    if font_warning:
+        story.append(Paragraph(
+            f"<i><font color='#E57373'>⚠ {_escape_xml(font_warning)}</font></i>",
+            styles["HW_Body"],
+        ))
+
+    story.append(HRFlowable(
+        width="88%", thickness=1.5,
+        color=_HW_MARGIN_COL, spaceAfter=10, spaceBefore=4,
+    ))
+
+    # ── Key Topics (optional) ─────────────────────────────────────────────────
+    if topics:
+        story.append(Paragraph("📌  Key Topics", styles["HW_H1"]))
+        story.append(Spacer(1, 0.1 * cm))
+        for t in topics:
+            label = getattr(t, "label", str(t))
+            time_fmt = getattr(t, "time_range_fmt", "")
+            suffix = f" <font size='8' color='#9FA8DA'>({_escape_xml(str(time_fmt))})</font>" if time_fmt else ""
+            story.append(Paragraph(f"✎  {_escape_xml(label)}{suffix}", styles["HW_Bullet"]))
+        story.append(HRFlowable(
+            width="88%", thickness=0.6,
+            color=_HW_LINE_COL, spaceAfter=6, spaceBefore=6,
+        ))
+
+    # ── Revision Notes ────────────────────────────────────────────────────────
+    story.append(Paragraph("📝  Revision Notes", styles["HW_H1"]))
+    story.append(Spacer(1, 0.15 * cm))
+    story.extend(_hw_notes_to_story(revision_notes, styles))
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Markdown Builder
 # ═══════════════════════════════════════════════════════════════════════════════
 

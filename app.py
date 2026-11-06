@@ -725,29 +725,55 @@ def build_pdf_bytes() -> bytes:
 
 
 def build_notes_only_pdf_bytes() -> bytes:
-    """Build a notes-only PDF for the Save as PDF button in the Revision Notes tab."""
-    from export import build_notes_only_pdf_bytes as _build_notes_pdf
+    """Build a notes-only PDF for the Save as PDF button in the Revision Notes tab.
+
+    Dispatches to build_handwritten_pdf_bytes() when the selected format is
+    'Handwritten', and to build_notes_only_pdf_bytes() otherwise.
+    """
+    notes_format = st.session_state.get("notes_format", "Detailed")
     doc_title = st.session_state.get("lecture_title") or "PrepGenius — Study Notes"
     video_url = st.session_state.get("url", "").strip()
     video_id = extract_video_id(video_url) or ""
-    try:
-        return _build_notes_pdf(
-            revision_notes=st.session_state.revision_notes,
-            title=doc_title,
-            video_url=video_url,
-            video_id=video_id,
-            topics=st.session_state.topics or None,
-        )
-    except Exception as e:
-        return f"PDF generation failed: {e}".encode()
+    topics = st.session_state.topics or None
+
+    if notes_format == "Handwritten":
+        from export import build_handwritten_pdf_bytes as _build_hw_pdf
+        try:
+            return _build_hw_pdf(
+                revision_notes=st.session_state.revision_notes,
+                title=doc_title,
+                video_url=video_url,
+                video_id=video_id,
+                topics=topics,
+            )
+        except Exception as e:
+            return f"Handwritten PDF generation failed: {e}".encode()
+    else:
+        from export import build_notes_only_pdf_bytes as _build_notes_pdf
+        try:
+            return _build_notes_pdf(
+                revision_notes=st.session_state.revision_notes,
+                title=doc_title,
+                video_url=video_url,
+                video_id=video_id,
+                topics=topics,
+            )
+        except Exception as e:
+            return f"PDF generation failed: {e}".encode()
 
 
-def _safe_pdf_filename(title: str) -> str:
-    """Generate a sanitised PDF filename from the lecture title."""
+def _safe_pdf_filename(title: str, notes_format: str = "Detailed") -> str:
+    """Generate a sanitised PDF filename from the lecture title and notes format."""
     slug = re.sub(r"[^\w\s-]", "", title).strip()
     slug = re.sub(r"[\s_-]+", "_", slug)
-    slug = slug[:80] or "Lecture_Notes"
-    return f"Lecture_Notes_{slug}.pdf"
+    slug = slug[:60] or "Lecture_Notes"
+    fmt_map = {
+        "Detailed":    "Detailed_Notes",
+        "Concise":     "Concise_Notes",
+        "Handwritten": "Handwritten_Notes",
+    }
+    fmt_label = fmt_map.get(notes_format, "Notes")
+    return f"Lecture_{fmt_label}_{slug}.pdf"
 
 def build_quiz_json_export() -> bytes:
     """Build a JSON export of the current quiz questions and results (if available)."""
@@ -1248,10 +1274,13 @@ with tab_url:
         st.session_state.language = lang
     with col_fmt:
         st.markdown('<p class="section-label">📋 Notes Format</p>', unsafe_allow_html=True)
+        _fmt_options = ["Detailed", "Concise", "Handwritten"]
+        _cur_fmt = st.session_state.get("notes_format", "Detailed")
+        _fmt_idx = _fmt_options.index(_cur_fmt) if _cur_fmt in _fmt_options else 0
         fmt = st.selectbox(
             "fmt",
-            ["Detailed", "Concise"],
-            index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
+            _fmt_options,
+            index=_fmt_idx,
             label_visibility="collapsed",
             key="url_fmt_select",
         )
@@ -1348,10 +1377,13 @@ with tab_manual:
         st.session_state.language = m_lang
     with col_m_fmt:
         st.markdown('<p class="section-label">📋 Notes Format</p>', unsafe_allow_html=True)
+        _mfmt_options = ["Detailed", "Concise", "Handwritten"]
+        _cur_mfmt = st.session_state.get("notes_format", "Detailed")
+        _mfmt_idx = _mfmt_options.index(_cur_mfmt) if _cur_mfmt in _mfmt_options else 0
         m_fmt = st.selectbox(
             "m_fmt",
-            ["Detailed", "Concise"],
-            index=0 if st.session_state.get("notes_format", "Detailed") == "Detailed" else 1,
+            _mfmt_options,
+            index=_mfmt_idx,
             label_visibility="collapsed",
             key="manual_fmt_select",
         )
@@ -1574,8 +1606,9 @@ if st.session_state.generated:
     dl1, dl2, dl3, dl4, dl5 = st.columns(5)
     with dl1:
         _pdf_dl_title = st.session_state.get("lecture_title") or "Study_Notes"
+        _pdf_dl_fmt   = st.session_state.get("notes_format", "Detailed")
         st.download_button("📄 PDF Report", data=build_pdf_bytes(),
-                           file_name=_safe_pdf_filename(_pdf_dl_title), mime="application/pdf",
+                           file_name=_safe_pdf_filename(_pdf_dl_title, _pdf_dl_fmt), mime="application/pdf",
                            use_container_width=True)
     with dl2:
         st.download_button("📝 Markdown Notes", data=build_markdown_export(),
@@ -1609,28 +1642,165 @@ if st.session_state.generated:
             st.caption(f"Language: {st.session_state.language} · Model: {model_used} · LangChain engine")
         with col_badge:
             fmt_lbl = st.session_state.get("notes_format", "Detailed")
+            # Badge colour varies by format
+            _badge_colours = {
+                "Detailed":    "background:#EEF2FF;border-color:#6C63FF;color:#4F46E5;",
+                "Concise":     "background:#FFFBEB;border-color:#D97706;color:#92400E;",
+                "Handwritten": "background:#FDF4FF;border-color:#9C27B0;color:#6A1B9A;",
+            }
+            _bc = _badge_colours.get(fmt_lbl, _badge_colours["Detailed"])
             st.markdown(
-                f'<div style="text-align:right;"><span class="topic-pill" style="background:#EEF2FF;border-color:#6C63FF;color:#4F46E5;font-weight:600;">📋 {fmt_lbl} Notes</span></div>',
+                f'<div style="text-align:right;"><span class="topic-pill" style="{_bc}font-weight:600;">📋 {fmt_lbl} Notes</span></div>',
                 unsafe_allow_html=True,
             )
-        st.markdown(st.session_state.revision_notes)
+
+        # ── Handwritten in-app display ────────────────────────────────────
+        if fmt_lbl == "Handwritten":
+            # Render notes inside a notebook-paper styled container
+            import html as _html_mod
+            _notes_html = st.session_state.revision_notes
+            # Convert markdown to basic HTML for display
+            import re as _re_hw
+            def _md_to_hw_html(md_text: str) -> str:
+                lines = md_text.split("\n")
+                out = []
+                for line in lines:
+                    s = line.strip()
+                    if not s:
+                        out.append("<div style='height:0.5em'></div>")
+                        continue
+                    # Headings
+                    h1m = _re_hw.match(r"^#{1,2}\s+(.+)$", s)
+                    h2m = _re_hw.match(r"^#{3}\s+(.+)$", s)
+                    h3m = _re_hw.match(r"^#{4,6}\s+(.+)$", s)
+                    if h1m and not h2m:
+                        content = _re_hw.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", _html_mod.escape(h1m.group(1)))
+                        out.append(f'<div class="hw-h1">{content}</div>')
+                        continue
+                    if h2m:
+                        content = _re_hw.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", _html_mod.escape(h2m.group(1)))
+                        out.append(f'<div class="hw-h2">{content}</div>')
+                        continue
+                    if h3m:
+                        content = _re_hw.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", _html_mod.escape(h3m.group(1)))
+                        out.append(f'<div class="hw-h3">{content}</div>')
+                        continue
+                    # HR
+                    if _re_hw.match(r"^[-*_]{3,}\s*$", s):
+                        out.append('<hr style="border:none;border-top:1px solid #B8D0E8;margin:6px 0;">')
+                        continue
+                    # Bullets
+                    bm = _re_hw.match(r"^[\-\*\+•]\s+(.+)$", s)
+                    if bm:
+                        content = _re_hw.sub(r"\*\*(.+?)\*\*", r'<span class="hw-kw">\1</span>', _html_mod.escape(bm.group(1)))
+                        content = _re_hw.sub(r"\*(.+?)\*", r"<em>\1</em>", content)
+                        out.append(f'<div class="hw-bullet">✎&nbsp; {content}</div>')
+                        continue
+                    # Checklist
+                    cm = _re_hw.match(r"^-\s*\[\s*[xX ]?\s*\]\s*(.+)$", s)
+                    if cm:
+                        content = _html_mod.escape(cm.group(1))
+                        out.append(f'<div class="hw-bullet">☐&nbsp; {content}</div>')
+                        continue
+                    # Numbered
+                    nm = _re_hw.match(r"^(\d+)[.)]\s+(.+)$", s)
+                    if nm:
+                        content = _re_hw.sub(r"\*\*(.+?)\*\*", r'<span class="hw-kw">\1</span>', _html_mod.escape(nm.group(2)))
+                        out.append(f'<div class="hw-bullet">{nm.group(1)}.&nbsp; {content}</div>')
+                        continue
+                    # Regular body
+                    content = _re_hw.sub(r"\*\*(.+?)\*\*", r'<span class="hw-kw">\1</span>', _html_mod.escape(s))
+                    content = _re_hw.sub(r"\*(.+?)\*", r"<em>\1</em>", content)
+                    out.append(f'<div class="hw-body">{content}</div>')
+                return "\n".join(out)
+
+            _hw_content = _md_to_hw_html(st.session_state.revision_notes)
+            st.markdown(
+                f"""
+<style>
+.hw-notebook {{
+    background: repeating-linear-gradient(
+        to bottom,
+        #F7F9FF 0px,
+        #F7F9FF 20px,
+        #B8D0E8 20px,
+        #B8D0E8 21px
+    );
+    border-left: 4px solid #E8A0A0;
+    border-radius: 4px;
+    padding: 20px 24px 20px 32px;
+    margin: 10px 0;
+    font-family: "Georgia", serif;
+    font-size: 15px;
+    line-height: 21px;
+    color: #1A237E;
+    min-height: 200px;
+}}
+.hw-h1 {{
+    font-size: 19px;
+    font-weight: bold;
+    color: #0D47A1;
+    margin: 18px 0 6px 0;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}}
+.hw-h2 {{
+    font-size: 16px;
+    font-weight: bold;
+    color: #1565C0;
+    margin: 12px 0 4px 0;
+}}
+.hw-h3 {{
+    font-size: 14px;
+    font-style: italic;
+    font-weight: bold;
+    color: #283593;
+    margin: 8px 0 3px 0;
+}}
+.hw-body {{
+    margin: 2px 0;
+    color: #1A237E;
+}}
+.hw-bullet {{
+    margin: 2px 0 2px 18px;
+    color: #1A237E;
+}}
+.hw-kw {{
+    background: #FFF9C4;
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: bold;
+    color: #0D47A1;
+}}
+</style>
+<div class="hw-notebook">{_hw_content}</div>
+""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(st.session_state.revision_notes)
 
         # ── Save as PDF — prominent panel shown once notes are ready ──────
         st.markdown("<br>", unsafe_allow_html=True)
+        _fmt_lbl_cur = st.session_state.get("notes_format", "Detailed")
+        if _fmt_lbl_cur == "Handwritten":
+            _pdf_ready_msg = "✅ <strong>Your Handwritten Study Notes Are Ready!</strong> Download a beautiful notebook-style PDF for offline revision."
+        else:
+            _pdf_ready_msg = "✅ <strong>Your Study Notes Are Ready!</strong> Save them as a professionally formatted PDF — ideal for offline revision and exam prep."
         st.markdown(
-            '<div class="ok-box">✅ <strong>Your Study Notes Are Ready!</strong> '
-            'Save them as a professionally formatted PDF — ideal for offline revision and exam prep.</div>',
+            f'<div class="ok-box">{_pdf_ready_msg}</div>',
             unsafe_allow_html=True,
         )
         _notes_title = st.session_state.get("lecture_title") or "Study_Notes"
-        _notes_pdf_fn = _safe_pdf_filename(_notes_title)
+        _notes_pdf_fn = _safe_pdf_filename(_notes_title, _fmt_lbl_cur)
         _notes_md_fn = re.sub(r"[^\w\s-]", "", _notes_title).strip().replace(" ", "_")[:60] or "Notes"
         _col_pdf, _col_md, _col_info = st.columns([1.8, 1.8, 2.4])
         with _col_pdf:
             _notes_pdf_data = build_notes_only_pdf_bytes()
             if isinstance(_notes_pdf_data, bytes) and _notes_pdf_data[:4] == b"%PDF":
+                _pdf_btn_label = "✏️ Save Handwritten PDF" if _fmt_lbl_cur == "Handwritten" else "📥 Save as PDF"
                 st.download_button(
-                    "📥 Save as PDF",
+                    _pdf_btn_label,
                     data=_notes_pdf_data,
                     file_name=_notes_pdf_fn,
                     mime="application/pdf",
